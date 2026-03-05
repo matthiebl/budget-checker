@@ -3,10 +3,13 @@ import type { AppState, Period, CategoryList, BudgetEntry } from '../types'
 import {
   displayAmount,
   getCategoryWeeklyTotal,
+  roundToTwo,
 } from './budgetCalculations'
 import { findSubcategoryById, findCategoryForSubcategory } from './categoryHelpers'
 import { appStateToPersistedState } from './storageHelpers'
 import { buildShareURL } from './urlEncoding'
+import { computeInsights, generateInsightSentences, type InsightsData } from './insightsCalculations'
+import { extractExpenseDates, getDateRange, formatMonthLabel } from './dateParsing'
 
 const PERIODS: Period[] = ['week', 'fortnight', 'month', 'year']
 const PERIOD_LABELS = { week: 'Weekly', fortnight: 'Fortnightly', month: 'Monthly', year: 'Yearly' }
@@ -17,6 +20,14 @@ const BLUE_LIGHT = 'FFDBEAFE'
 const ROW_ALT = 'FFF8FAFC'
 const YELLOW_LIGHT = 'FFFEFCE8'
 const WHITE = 'FFFFFFFF'
+const GREEN_FILL = 'FFD1FAE5'
+const AMBER_FILL = 'FFFEF3C7'
+const RED_FILL = 'FFFEE2E2'
+const GREEN_TEXT = 'FF065F46'
+const AMBER_TEXT = 'FF92400E'
+const RED_TEXT = 'FF991B1B'
+const GREEN_VARIANCE = 'FF16A34A'
+const RED_VARIANCE = 'FFDC2626'
 
 function headerFont(): Partial<ExcelJS.Font> {
   return { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 }
@@ -39,6 +50,28 @@ function setColumnWidths(sheet: ExcelJS.Worksheet, widths: number[]) {
 
 function currencyFormat(): string {
   return '"$"#,##0.00'
+}
+
+function getStatusText(percent: number): string {
+  if (!isFinite(percent) || percent > 100) return 'Over'
+  if (percent >= 90) return 'Near'
+  return 'Under'
+}
+
+function applyStatusStyle(cell: ExcelJS.Cell, percent: number, bold = false) {
+  const isOver = !isFinite(percent) || percent > 100
+  const isNear = isFinite(percent) && percent >= 90 && percent <= 100
+  if (isOver) {
+    cell.font = { bold, color: { argb: RED_TEXT } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: RED_FILL } }
+  } else if (isNear) {
+    cell.font = { bold, color: { argb: AMBER_TEXT } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMBER_FILL } }
+  } else {
+    cell.font = { bold, color: { argb: GREEN_TEXT } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GREEN_FILL } }
+  }
+  cell.alignment = { horizontal: 'center' }
 }
 
 // ─── Sheet 1: Categories & Budget ─────────────────────────────────────────────
@@ -96,7 +129,6 @@ function buildCategoriesSheet(
         : 0,
     ])
 
-    // Style category row
     catRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
       cell.font = { bold: true, size: 11 }
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BLUE_LIGHT } }
@@ -190,12 +222,10 @@ function buildRawExpensesSheet(wb: ExcelJS.Workbook, state: AppState): void {
     return
   }
 
-  // Headers
   const headerRow = sheet.addRow(state.parsedCSV.rawHeaders)
   headerRow.eachCell(cell => applyHeaderStyle(cell))
   headerRow.height = 22
 
-  // Data rows
   state.parsedCSV.rows.forEach((rawRow, i) => {
     const row = sheet.addRow(rawRow)
     const isAlt = i % 2 === 1
@@ -205,7 +235,6 @@ function buildRawExpensesSheet(wb: ExcelJS.Workbook, state: AppState): void {
     row.height = 16
   })
 
-  // Auto-size columns (approximate)
   const maxWidths = state.parsedCSV.rawHeaders.map(h => h.length)
   state.parsedCSV.rows.forEach(row => {
     row.forEach((cell, i) => {
@@ -256,7 +285,6 @@ function buildFormattedExpensesSheet(wb: ExcelJS.Workbook, state: AppState): voi
 
     row.eachCell({ includeEmpty: true }, (cell, colNum) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isAlt ? ROW_ALT : WHITE } }
-      // Format amount cells
       const configIdx = colNum - 1
       if (configIdx < visibleConfigs.length && visibleConfigs[configIdx].role === 'amount' && typeof cell.value === 'number') {
         cell.numFmt = currencyFormat()
@@ -269,26 +297,305 @@ function buildFormattedExpensesSheet(wb: ExcelJS.Workbook, state: AppState): voi
     row.height = 16
   })
 
-  // Auto-size
   headers.forEach((h, i) => {
     const col = sheet.getColumn(i + 1)
     col.width = Math.min(40, Math.max(10, h.length * 1.2))
   })
 }
 
-// ─── Sheet 4: Summary ─────────────────────────────────────────────────────────
+// ─── Sheet 4: Budget vs Actual ────────────────────────────────────────────────
 
-function buildSummarySheet(
+function buildBudgetVsActualSheet(
   wb: ExcelJS.Workbook,
   state: AppState,
+  insights: InsightsData | null,
   restoreURL: string
 ): void {
-  const sheet = wb.addWorksheet('Summary')
+  const sheet = wb.addWorksheet('Budget vs Actual')
   const activeList = state.categoryLists.find(l => l.id === state.activeCategoryListId) ?? null
+  const COLS = 8 // A–H
 
   // Title
-  const titleRow = sheet.addRow(['Budget vs Actual Summary'])
-  sheet.mergeCells('A1:F1')
+  const titleRow = sheet.addRow([`Budget vs Actual${activeList ? ' – ' + activeList.name : ''}`])
+  sheet.mergeCells(1, 1, 1, COLS)
+  titleRow.getCell(1).font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } }
+  titleRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BLUE_DARK } }
+  titleRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
+  titleRow.height = 30
+
+  if (!insights) {
+    sheet.addRow([])
+    const msgRow = sheet.addRow(['No insights data available. Import expenses and configure columns in the Expenses tab.'])
+    sheet.mergeCells(msgRow.number, 1, msgRow.number, COLS)
+    msgRow.getCell(1).font = { italic: true, color: { argb: 'FF6B7280' } }
+    addRestoreURL(sheet, restoreURL, COLS)
+    setColumnWidths(sheet, [22, 26, 14, 14, 14, 14, 10, 10])
+    return
+  }
+
+  // Period info row
+  const startLabel = insights.dateRange.start.toLocaleDateString('en-AU', { dateStyle: 'medium' })
+  const endLabel = insights.dateRange.end.toLocaleDateString('en-AU', { dateStyle: 'medium' })
+  const periodInfo = `Period: ${startLabel} – ${endLabel}  (${insights.totalMonths.toFixed(1)} months${insights.hasDates ? ', actual dates' : ', estimated – dates spread evenly'})`
+  const periodRow = sheet.addRow([periodInfo])
+  sheet.mergeCells(2, 1, 2, COLS)
+  periodRow.getCell(1).font = { italic: true, color: { argb: 'FF374151' } }
+  periodRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F9FF' } }
+  periodRow.height = 18
+
+  sheet.addRow([]) // blank
+
+  // Headers: Category | Subcategory | Budget/Month | Budget (Period) | Actual Spend | Variance | % Used | Status
+  const headerRow = sheet.addRow([
+    'Category', 'Subcategory', 'Budget/Month', 'Budget (Period)', 'Actual Spend', 'Variance', '% Used', 'Status',
+  ])
+  headerRow.eachCell(cell => applyHeaderStyle(cell))
+  headerRow.getCell(3).alignment = { horizontal: 'right' }
+  headerRow.getCell(4).alignment = { horizontal: 'right' }
+  headerRow.getCell(5).alignment = { horizontal: 'right' }
+  headerRow.getCell(6).alignment = { horizontal: 'right' }
+  headerRow.getCell(7).alignment = { horizontal: 'right' }
+  headerRow.height = 22
+
+  const dataStartRow = 5
+  let rowNum = dataStartRow
+  let altRow = 0
+
+  for (const category of insights.categories) {
+    const proRatedCat = roundToTwo(category.budgetMonthly * insights.totalMonths)
+    const hasData = category.budgetMonthly > 0 || category.actualTotal > 0
+    const varianceVal = hasData ? category.variance : ''
+    const pctUsed = category.budgetMonthly > 0 ? category.variancePercent / 100 : ''
+
+    const catRow = sheet.addRow([
+      category.categoryName,
+      '—',
+      category.budgetMonthly || '',
+      proRatedCat || '',
+      category.actualTotal || '',
+      varianceVal,
+      pctUsed,
+      category.budgetMonthly > 0 ? getStatusText(category.variancePercent) : '',
+    ])
+
+    catRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      if (colNum !== 8) cell.font = { bold: true, size: 11 }
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BLUE_LIGHT } }
+      if (colNum >= 3) {
+        switch (colNum) {
+          case 6:
+            cell.numFmt = currencyFormat()
+            cell.alignment = { horizontal: 'right' }
+            if (typeof cell.value === 'number') {
+              cell.font = { bold: true, color: { argb: cell.value < 0 ? RED_VARIANCE : GREEN_VARIANCE } }
+            }
+            break
+          case 7:
+            if (typeof cell.value === 'number') {
+              cell.numFmt = '0%'
+              cell.alignment = { horizontal: 'right' }
+              cell.font = { bold: true }
+            }
+            break
+          case 8:
+            if (cell.value) applyStatusStyle(cell, category.variancePercent, true)
+            break
+          default:
+            if (typeof cell.value === 'number') {
+              cell.numFmt = currencyFormat()
+              cell.alignment = { horizontal: 'right' }
+              cell.font = { bold: true }
+            }
+        }
+      }
+    })
+    catRow.height = 20
+    rowNum++
+
+    // Subcategory rows
+    for (const sub of category.subcategories) {
+      if (sub.budgetMonthly === 0 && sub.actualTotal === 0) continue
+      const proRatedSub = roundToTwo(sub.budgetMonthly * insights.totalMonths)
+      const subVariance = sub.budgetMonthly > 0 || sub.actualTotal > 0 ? sub.variance : ''
+      const subPct = sub.budgetMonthly > 0 ? sub.variancePercent / 100 : ''
+      const isAlt = altRow++ % 2 === 1
+
+      const subRow = sheet.addRow([
+        '',
+        sub.subcategoryName,
+        sub.budgetMonthly || '',
+        proRatedSub || '',
+        sub.actualTotal || '',
+        subVariance,
+        subPct,
+        sub.budgetMonthly > 0 ? getStatusText(sub.variancePercent) : '',
+      ])
+
+      subRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+        if (colNum !== 8) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isAlt ? ROW_ALT : WHITE } }
+        }
+        if (colNum >= 3) {
+          switch (colNum) {
+            case 6:
+              cell.numFmt = currencyFormat()
+              cell.alignment = { horizontal: 'right' }
+              if (typeof cell.value === 'number') {
+                cell.font = { color: { argb: cell.value < 0 ? RED_VARIANCE : GREEN_VARIANCE } }
+              }
+              break
+            case 7:
+              if (typeof cell.value === 'number') {
+                cell.numFmt = '0%'
+                cell.alignment = { horizontal: 'right' }
+              }
+              break
+            case 8:
+              if (cell.value) applyStatusStyle(cell, sub.variancePercent)
+              break
+            default:
+              if (typeof cell.value === 'number') {
+                cell.numFmt = currencyFormat()
+                cell.alignment = { horizontal: 'right' }
+              }
+          }
+        }
+      })
+      subRow.height = 18
+      rowNum++
+    }
+  }
+
+  // Grand total row
+  const proRatedTotal = roundToTwo(insights.totalBudgetMonthly * insights.totalMonths)
+  const totalVariance = roundToTwo(proRatedTotal - insights.totalActual)
+  const totalPercent = proRatedTotal > 0 ? roundToTwo((insights.totalActual / proRatedTotal) * 100) : 0
+
+  sheet.addRow([]) // blank before total
+  rowNum++
+
+  const totalRow = sheet.addRow([
+    'TOTAL', '',
+    insights.totalBudgetMonthly || '',
+    proRatedTotal || '',
+    insights.totalActual || '',
+    totalVariance,
+    proRatedTotal > 0 ? totalPercent / 100 : '',
+    proRatedTotal > 0 ? getStatusText(totalPercent) : '',
+  ])
+  totalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+    if (colNum !== 8) cell.font = { bold: true }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } }
+    if (colNum >= 3) {
+      switch (colNum) {
+        case 6:
+          cell.numFmt = currencyFormat()
+          cell.alignment = { horizontal: 'right' }
+          if (typeof cell.value === 'number') {
+            cell.font = { bold: true, color: { argb: cell.value < 0 ? RED_VARIANCE : GREEN_VARIANCE } }
+          }
+          break
+        case 7:
+          if (typeof cell.value === 'number') {
+            cell.numFmt = '0%'
+            cell.alignment = { horizontal: 'right' }
+            cell.font = { bold: true }
+          }
+          break
+        case 8:
+          if (cell.value) applyStatusStyle(cell, totalPercent, true)
+          break
+        default:
+          if (typeof cell.value === 'number') {
+            cell.numFmt = currencyFormat()
+            cell.alignment = { horizontal: 'right' }
+            cell.font = { bold: true }
+          }
+      }
+    }
+  })
+  totalRow.height = 22
+
+  // Data bar on % Used column (G = col 7) for data rows
+  const lastDataRow = rowNum - 1
+  if (lastDataRow >= dataStartRow) {
+    sheet.addConditionalFormatting({
+      ref: `G${dataStartRow}:G${lastDataRow}`,
+      rules: [
+        {
+          type: 'dataBar',
+          priority: 1,
+          minLength: 0,
+          maxLength: 100,
+          cfvo: [
+            { type: 'num', value: 0 },
+            { type: 'num', value: 1 },
+          ],
+          showValue: true,
+          gradient: true,
+        } as ExcelJS.DataBarRuleType,
+      ],
+    })
+  }
+
+  // Unassigned expenses note
+  if (insights.unassignedCount > 0) {
+    sheet.addRow([])
+    const noteRow = sheet.addRow([
+      `ℹ  ${insights.unassignedCount} unassigned expense${insights.unassignedCount > 1 ? 's' : ''} totalling $${insights.unassignedTotal.toFixed(2)} are excluded from the table above.`,
+    ])
+    sheet.mergeCells(noteRow.number, 1, noteRow.number, COLS)
+    noteRow.getCell(1).font = { italic: true, color: { argb: 'FF1D4ED8' } }
+    noteRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } }
+    noteRow.height = 18
+  }
+
+  // Key Insights section
+  sheet.addRow([])
+  const insightHeader = sheet.addRow(['Key Insights'])
+  sheet.mergeCells(insightHeader.number, 1, insightHeader.number, COLS)
+  insightHeader.getCell(1).font = { bold: true, size: 12 }
+  insightHeader.height = 22
+
+  const sentenceFills: Record<string, string> = {
+    overspend: 'FFFEE2E2',
+    underspend: 'FFD1FAE5',
+    info: 'FFEFF6FF',
+    positive: 'FFD1FAE5',
+  }
+  const sentenceIcons: Record<string, string> = {
+    overspend: '⚠  ',
+    underspend: '✓  ',
+    info: 'ℹ  ',
+    positive: '✓  ',
+  }
+
+  for (const sentence of generateInsightSentences(insights)) {
+    const sRow = sheet.addRow([`${sentenceIcons[sentence.type]}${sentence.text}`])
+    sheet.mergeCells(sRow.number, 1, sRow.number, COLS)
+    sRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: sentenceFills[sentence.type] } }
+    sRow.getCell(1).alignment = { wrapText: true }
+    sRow.height = 28
+  }
+
+  addRestoreURL(sheet, restoreURL, COLS)
+  setColumnWidths(sheet, [22, 26, 14, 14, 14, 14, 10, 10])
+}
+
+// ─── Sheet 5: Monthly Breakdown ───────────────────────────────────────────────
+
+function buildMonthlyBreakdownSheet(
+  wb: ExcelJS.Workbook,
+  insights: InsightsData
+): void {
+  if (!insights.hasDates || insights.months.length < 2) return
+
+  const sheet = wb.addWorksheet('Monthly Breakdown')
+  const COLS = 6
+
+  // Title
+  const titleRow = sheet.addRow(['Monthly Breakdown'])
+  sheet.mergeCells(1, 1, 1, COLS)
   titleRow.getCell(1).font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } }
   titleRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BLUE_DARK } }
   titleRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' }
@@ -297,133 +604,180 @@ function buildSummarySheet(
   sheet.addRow([]) // blank
 
   // Headers
-  const headerRow = sheet.addRow(['Category', 'Subcategory', 'Budget (Monthly)', 'Actual Spend', 'Variance', '% Used'])
+  const headerRow = sheet.addRow(['Month', 'Budget', 'Actual', 'Variance', '% Used', 'Status'])
   headerRow.eachCell(cell => applyHeaderStyle(cell))
+  headerRow.getCell(2).alignment = { horizontal: 'right' }
+  headerRow.getCell(3).alignment = { horizontal: 'right' }
+  headerRow.getCell(4).alignment = { horizontal: 'right' }
+  headerRow.getCell(5).alignment = { horizontal: 'right' }
   headerRow.height = 22
 
   const dataStartRow = 4
+  let rowNum = dataStartRow
+  let altRow = 0
 
-  if (!activeList) {
-    sheet.addRow(['No category list selected'])
-  } else {
-    // Compute actual spend per subcategory
-    const amountConfig = state.columnConfigs.find(c => c.role === 'amount')
-    const actualSpend = new Map<string, number>()
-    if (amountConfig) {
-      state.expenseRows
-        .filter(r => !r.omit && r.categoryId)
-        .forEach(r => {
-          const rawVal = r.raw[amountConfig.originalIndex] ?? ''
-          const num = parseFloat(rawVal.replace(/[$,]/g, ''))
-          if (!isNaN(num)) {
-            const amount = amountConfig.negateAmount ? -num : num
-            const current = actualSpend.get(r.categoryId!) ?? 0
-            actualSpend.set(r.categoryId!, current + Math.abs(amount))
-          }
-        })
-    }
+  for (const mk of insights.months) {
+    const key = `${mk.year}-${String(mk.month + 1).padStart(2, '0')}`
+    const monthBudget = insights.totalBudgetMonthly
+    const monthActual = roundToTwo(
+      insights.categories.reduce((sum, cat) => sum + (cat.actualByMonth.get(key) ?? 0), 0)
+    )
+    const monthVariance = roundToTwo(monthBudget - monthActual)
+    const monthPercent = monthBudget > 0 ? roundToTwo((monthActual / monthBudget) * 100) : 0
+    const isAlt = altRow++ % 2 === 1
 
-    let rowNum = dataStartRow
-    let altRow = 0
+    const row = sheet.addRow([
+      formatMonthLabel(mk.year, mk.month),
+      monthBudget || '',
+      monthActual || '',
+      monthBudget > 0 || monthActual > 0 ? monthVariance : '',
+      monthBudget > 0 ? monthPercent / 100 : '',
+      monthBudget > 0 ? getStatusText(monthPercent) : '',
+    ])
 
-    for (const category of activeList.categories) {
-      // Category summary row
-      const catWeekly = getCategoryWeeklyTotal(category.id, activeList, state.budgetEntries)
-      const catMonthly = catWeekly > 0 ? displayAmount(catWeekly, 'month') : 0
-      const catActual = category.children.reduce((sum, s) => sum + (actualSpend.get(s.id) ?? 0), 0)
-
-      const catRow = sheet.addRow([
-        category.name, '',
-        catMonthly || '',
-        catActual || '',
-        catMonthly > 0 || catActual > 0 ? { formula: `C${rowNum}-D${rowNum}`, result: catMonthly - catActual } : '',
-        catMonthly > 0 ? { formula: `D${rowNum}/C${rowNum}`, result: catMonthly > 0 ? catActual / catMonthly : 0 } : '',
-      ])
-      catRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
-        cell.font = { bold: true }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BLUE_LIGHT } }
-        if (colNum >= 3) {
-          if (colNum === 6) {
-            cell.numFmt = '0%'
-          } else if (typeof cell.value === 'number' || (cell.value as ExcelJS.CellFormulaValue)?.formula) {
+    row.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      if (colNum !== 6) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isAlt ? ROW_ALT : WHITE } }
+      }
+      switch (colNum) {
+        case 1:
+          cell.font = { bold: true }
+          break
+        case 2:
+        case 3:
+          if (typeof cell.value === 'number') {
             cell.numFmt = currencyFormat()
-          }
-          cell.alignment = { horizontal: 'right' }
-        }
-      })
-      catRow.height = 20
-      rowNum++
-
-      for (const sub of category.children) {
-        const entry = state.budgetEntries.find(e => e.subcategoryId === sub.id)
-        const monthly = entry ? displayAmount(entry.weeklyAmount, 'month') : 0
-        const actual = actualSpend.get(sub.id) ?? 0
-        const isAlt = altRow++ % 2 === 1
-
-        const subRow = sheet.addRow([
-          '',
-          sub.name,
-          monthly || '',
-          actual || '',
-          monthly > 0 || actual > 0 ? { formula: `C${rowNum}-D${rowNum}`, result: monthly - actual } : '',
-          monthly > 0 ? { formula: `D${rowNum}/C${rowNum}`, result: monthly > 0 ? actual / monthly : 0 } : '',
-        ])
-
-        subRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isAlt ? ROW_ALT : WHITE } }
-          if (colNum >= 3) {
-            if (colNum === 6) {
-              cell.numFmt = '0%'
-            } else if (typeof cell.value === 'number' || (cell.value as ExcelJS.CellFormulaValue)?.formula) {
-              cell.numFmt = currencyFormat()
-            }
             cell.alignment = { horizontal: 'right' }
           }
-        })
-        subRow.height = 18
-        rowNum++
+          break
+        case 4:
+          if (typeof cell.value === 'number') {
+            cell.numFmt = currencyFormat()
+            cell.alignment = { horizontal: 'right' }
+            cell.font = { color: { argb: cell.value < 0 ? RED_VARIANCE : GREEN_VARIANCE } }
+          }
+          break
+        case 5:
+          if (typeof cell.value === 'number') {
+            cell.numFmt = '0%'
+            cell.alignment = { horizontal: 'right' }
+          }
+          break
+        case 6:
+          if (cell.value) applyStatusStyle(cell, monthPercent)
+          break
       }
-    }
-
-    // Add conditional formatting (data bars) on % Used column (F)
-    const lastDataRow = rowNum - 1
-    if (lastDataRow >= dataStartRow) {
-      sheet.addConditionalFormatting({
-        ref: `F${dataStartRow}:F${lastDataRow}`,
-        rules: [
-          {
-            type: 'dataBar',
-            priority: 1,
-            minLength: 0,
-            maxLength: 100,
-            cfvo: [
-              { type: 'num', value: 0 },
-              { type: 'num', value: 1 },
-            ],
-            showValue: true,
-            gradient: true,
-          } as ExcelJS.DataBarRuleType,
-        ],
-      })
-    }
+    })
+    row.height = 18
+    rowNum++
   }
 
-  // Blank spacer rows
-  sheet.addRow([])
-  sheet.addRow([])
+  // Totals row
+  const totalActual = roundToTwo(insights.totalActual)
+  const totalBudget = roundToTwo(insights.totalBudgetMonthly * insights.months.length)
+  const totalVariance = roundToTwo(totalBudget - totalActual)
+  const totalPercent = totalBudget > 0 ? roundToTwo((totalActual / totalBudget) * 100) : 0
 
-  // Restore URL
-  const urlLabelRow = sheet.addRow(['Restore URL:', restoreURL])
-  urlLabelRow.getCell(1).font = { bold: true }
-  urlLabelRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: YELLOW_LIGHT } }
-  const urlCell = urlLabelRow.getCell(2)
+  sheet.addRow([]) // spacer
+  const totalRow = sheet.addRow([
+    'TOTAL',
+    totalBudget || '',
+    totalActual || '',
+    totalVariance,
+    totalBudget > 0 ? totalPercent / 100 : '',
+    totalBudget > 0 ? getStatusText(totalPercent) : '',
+  ])
+  totalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+    if (colNum !== 6) cell.font = { bold: true }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } }
+    switch (colNum) {
+      case 2:
+      case 3:
+        if (typeof cell.value === 'number') {
+          cell.numFmt = currencyFormat()
+          cell.alignment = { horizontal: 'right' }
+          cell.font = { bold: true }
+        }
+        break
+      case 4:
+        if (typeof cell.value === 'number') {
+          cell.numFmt = currencyFormat()
+          cell.alignment = { horizontal: 'right' }
+          cell.font = { bold: true, color: { argb: cell.value < 0 ? RED_VARIANCE : GREEN_VARIANCE } }
+        }
+        break
+      case 5:
+        if (typeof cell.value === 'number') {
+          cell.numFmt = '0%'
+          cell.alignment = { horizontal: 'right' }
+          cell.font = { bold: true }
+        }
+        break
+      case 6:
+        if (cell.value) applyStatusStyle(cell, totalPercent, true)
+        break
+    }
+  })
+  totalRow.height = 22
+
+  // Data bar on % Used column (E = col 5)
+  const lastDataRow = rowNum - 1
+  if (lastDataRow >= dataStartRow) {
+    sheet.addConditionalFormatting({
+      ref: `E${dataStartRow}:E${lastDataRow}`,
+      rules: [
+        {
+          type: 'dataBar',
+          priority: 1,
+          minLength: 0,
+          maxLength: 100,
+          cfvo: [
+            { type: 'num', value: 0 },
+            { type: 'num', value: 1 },
+          ],
+          showValue: true,
+          gradient: true,
+        } as ExcelJS.DataBarRuleType,
+      ],
+    })
+  }
+
+  setColumnWidths(sheet, [14, 14, 14, 14, 10, 10])
+}
+
+// ─── Restore URL helper ───────────────────────────────────────────────────────
+
+function addRestoreURL(sheet: ExcelJS.Worksheet, restoreURL: string, cols: number) {
+  sheet.addRow([])
+  sheet.addRow([])
+  const urlRow = sheet.addRow(['Restore URL:', restoreURL])
+  urlRow.getCell(1).font = { bold: true }
+  urlRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: YELLOW_LIGHT } }
+  const urlCell = urlRow.getCell(2)
   urlCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: YELLOW_LIGHT } }
   urlCell.alignment = { wrapText: true }
   urlCell.font = { color: { argb: 'FF1D4ED8' } }
-  sheet.getRow(urlLabelRow.number).height = 40
+  if (cols > 2) {
+    sheet.mergeCells(urlRow.number, 2, urlRow.number, cols)
+  }
+  sheet.getRow(urlRow.number).height = 40
+}
 
-  setColumnWidths(sheet, [20, 24, 16, 16, 14, 10])
-  sheet.getColumn(2).width = 30 // wider for URL
+// ─── Date range resolution ────────────────────────────────────────────────────
+
+function resolveInsightsDateRange(state: AppState): { start: Date; end: Date } | undefined {
+  if (state.insightsDateOverride) {
+    const start = new Date(state.insightsDateOverride.start)
+    const end = new Date(state.insightsDateOverride.end)
+    if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && end >= start) {
+      return { start, end }
+    }
+  }
+  const parsedDates = extractExpenseDates(state.expenseRows, state.columnConfigs)
+  if (parsedDates) {
+    return getDateRange(parsedDates) ?? undefined
+  }
+  return undefined
 }
 
 // ─── Main export function ─────────────────────────────────────────────────────
@@ -437,10 +791,14 @@ export async function exportToExcel(state: AppState): Promise<void> {
   const persisted = appStateToPersistedState(state)
   const restoreURL = buildShareURL(persisted)
 
+  const dateRange = resolveInsightsDateRange(state)
+  const insights = computeInsights(state, dateRange)
+
   buildCategoriesSheet(wb, activeList, state.budgetEntries)
   buildRawExpensesSheet(wb, state)
   buildFormattedExpensesSheet(wb, state)
-  buildSummarySheet(wb, state, restoreURL)
+  buildBudgetVsActualSheet(wb, state, insights, restoreURL)
+  if (insights) buildMonthlyBreakdownSheet(wb, insights)
 
   const buffer = await wb.xlsx.writeBuffer()
   const blob = new Blob([buffer], {
