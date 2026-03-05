@@ -10,5 +10,6 @@ export function createInitialState(): AppState {
     parsedCSV: null,
     expenseRows: [],
     selectedRowIds: new Set(),
+    insightsDateOverride: null,
   }
 }

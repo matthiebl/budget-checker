@@ -24,7 +24,7 @@ export function ColumnConfigRow({ config, index }: ColumnConfigRowProps) {
   return (
     <div className="flex items-start gap-3 py-3 border-b border-gray-100 last:border-0">
       {/* Column index */}
-      <span className="text-xs text-gray-400 w-6 mt-2 text-right flex-shrink-0">
+      <span className="text-xs text-gray-400 w-6 mt-2 text-right shrink-0">
         {index + 1}
       </span>
 
@@ -43,7 +43,7 @@ export function ColumnConfigRow({ config, index }: ColumnConfigRowProps) {
       </div>
 
       {/* Role selector */}
-      <div className="flex-shrink-0">
+      <div className="shrink-0">
         <select
           value={config.role}
           onChange={e => update({ role: e.target.value as ColumnRole })}
@@ -64,7 +64,7 @@ export function ColumnConfigRow({ config, index }: ColumnConfigRowProps) {
 
       {/* Date format */}
       {config.role === 'date' && (
-        <div className="flex-shrink-0">
+        <div className="shrink-0">
           <input
             type="text"
             value={config.dateFormat ?? 'DD/MM/YYYY'}
@@ -78,7 +78,7 @@ export function ColumnConfigRow({ config, index }: ColumnConfigRowProps) {
 
       {/* Negate amount */}
       {config.role === 'amount' && (
-        <div className="flex items-center gap-1.5 flex-shrink-0 mt-1.5">
+        <div className="flex items-center gap-1.5 shrink-0 mt-1.5">
           <input
             type="checkbox"
             id={`negate-${index}`}

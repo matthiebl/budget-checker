@@ -37,6 +37,8 @@ export type Action =
   | { type: 'SET_COLUMN_CONFIGS'; payload: { configs: ColumnConfig[] } }
   | { type: 'UPDATE_COLUMN_CONFIG'; payload: { index: number; update: Partial<ColumnConfig> } }
   | { type: 'CLEAR_CSV' }
+  // Insights
+  | { type: 'SET_INSIGHTS_DATE_OVERRIDE'; payload: { range: { start: string; end: string } | null } }
   // Expense rows
   | { type: 'SET_EXPENSE_ROWS'; payload: { rows: ExpenseRow[] } }
   | { type: 'TOGGLE_ROW_OMIT'; payload: { rowId: string } }
@@ -269,7 +271,8 @@ export function reducer(state: AppState, action: Action): AppState {
 
     // ── CSV ───────────────────────────────────────────────────────────────────
     case 'SET_PARSED_CSV': {
-      return { ...state, parsedCSV: action.payload.csv }
+      // Reset the date override when a new CSV is imported
+      return { ...state, parsedCSV: action.payload.csv, insightsDateOverride: null }
     }
 
     case 'SET_COLUMN_CONFIGS': {
@@ -292,7 +295,11 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case 'CLEAR_CSV': {
-      return { ...state, parsedCSV: null, columnConfigs: [], expenseRows: [], selectedRowIds: new Set() }
+      return { ...state, parsedCSV: null, columnConfigs: [], expenseRows: [], selectedRowIds: new Set(), insightsDateOverride: null }
+    }
+
+    case 'SET_INSIGHTS_DATE_OVERRIDE': {
+      return { ...state, insightsDateOverride: action.payload.range }
     }
 
     // ── Expense Rows ──────────────────────────────────────────────────────────

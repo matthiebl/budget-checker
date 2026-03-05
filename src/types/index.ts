@@ -64,6 +64,7 @@ export interface AppState {
   parsedCSV: ParsedCSV | null
   expenseRows: ExpenseRow[]
   selectedRowIds: Set<string> // UI-only, not persisted
+  insightsDateOverride: { start: string; end: string } | null
 }
 
 // Serialisable snapshot for localStorage and URL encoding
@@ -75,6 +76,7 @@ export interface PersistedState {
   columnConfigs: ColumnConfig[]
   parsedCSV: ParsedCSV | null
   expenseRows: ExpenseRow[]
+  insightsDateOverride: { start: string; end: string } | null
 }
 
 // ─── Dropdown ─────────────────────────────────────────────────────────────────

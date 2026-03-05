@@ -252,11 +252,11 @@ export function CategoryNode({
         'mb-1.5 rounded-lg border transition-shadow',
         isDragging
           ? 'shadow-lg border-blue-300 bg-blue-50/20'
-          : 'border-gray-150 bg-white',
+          : 'border-gray-200 bg-white',
       ].join(' ')}
     >
       {/* Category header */}
-      <div className="flex items-center gap-1 py-1.5 px-2 group border-b border-gray-100">
+      <div className="flex items-center gap-1 py-1.5 px-2 group border-b border-gray-100 bg-gray-50 rounded-t-lg">
         {dragHandleProps && <DragHandle {...dragHandleProps} />}
         <input
           defaultValue={category.name}

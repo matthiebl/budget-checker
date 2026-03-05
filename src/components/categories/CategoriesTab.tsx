@@ -15,7 +15,7 @@ export function CategoriesTab() {
       <CategoryListSelector />
 
       <div className="mt-6">
-        <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-3">
+        <h3 className="text-sm font-semibold text-gray-700 mb-3">
           Categories &amp; Subcategories
         </h3>
         <CategoryTree />

@@ -5,6 +5,7 @@ import { Header } from './components/layout/Header'
 import { CategoriesTab } from './components/categories/CategoriesTab'
 import { BudgetTab } from './components/budget/BudgetTab'
 import { ExpensesTab } from './components/expenses/ExpensesTab'
+import { InsightsTab } from './components/insights/InsightsTab'
 import { exportToExcel } from './utils/excelExport'
 
 function AppContent() {
@@ -32,6 +33,7 @@ function AppContent() {
         {activeTab === 'categories' && <CategoriesTab />}
         {activeTab === 'budget' && <BudgetTab />}
         {activeTab === 'expenses' && <ExpensesTab />}
+        {activeTab === 'insights' && <InsightsTab />}
       </main>
     </div>
   )

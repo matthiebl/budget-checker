@@ -14,6 +14,7 @@ export function appStateToPersistedState(state: AppState): PersistedState {
     columnConfigs: state.columnConfigs,
     parsedCSV: csvSize > MAX_CSV_SIZE_BYTES ? null : state.parsedCSV,
     expenseRows: state.expenseRows,
+    insightsDateOverride: state.insightsDateOverride,
   }
 }
 
