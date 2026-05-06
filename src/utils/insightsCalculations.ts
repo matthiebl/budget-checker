@@ -58,8 +58,7 @@ export function getExpenseAmount(row: ExpenseRow, amountConfig: ColumnConfig): n
   const rawVal = row.raw[amountConfig.originalIndex] ?? ''
   const num = parseFloat(rawVal.replace(/[$,]/g, ''))
   if (isNaN(num)) return NaN
-  const amount = amountConfig.negateAmount ? -num : num
-  return Math.abs(amount)
+  return amountConfig.negateAmount ? -num : num
 }
 
 function daysBetween(a: Date, b: Date): number {
@@ -253,7 +252,7 @@ export function getTopOverspend(data: InsightsData, n = 3): SubcategoryInsight[]
 export function getTopUnderBudget(data: InsightsData, n = 3): SubcategoryInsight[] {
   return data.categories
     .flatMap(c => c.subcategories)
-    .filter(s => s.budgetMonthly > 0 && s.variancePercent < 70 && s.variance > 0)
+    .filter(s => s.budgetMonthly > 0 && s.variancePercent >= 0 && s.variancePercent < 70 && s.variance > 0)
     .sort((a, b) => b.variance - a.variance)
     .slice(0, n)
 }
@@ -271,7 +270,12 @@ export function generateInsightSentences(data: InsightsData): InsightSentence[] 
   const overallPercent = proRatedTotal > 0 ? (data.totalActual / proRatedTotal) * 100 : 0
 
   // Overall summary
-  if (proRatedTotal > 0) {
+  if (data.totalActual < 0) {
+    sentences.push({
+      text: `Net income of ${formatCurrency(Math.abs(data.totalActual))} this ${data.totalMonths.toFixed(1)}-month period — income and refunds exceed expenses.`,
+      type: 'positive',
+    })
+  } else if (proRatedTotal > 0) {
     if (overallPercent <= 100) {
       sentences.push({
         text: `Overall spending is at ${Math.round(overallPercent)}% of budget (${formatCurrency(data.totalActual)} of ${formatCurrency(proRatedTotal)}) for this ${data.totalMonths.toFixed(1)}-month period.`,

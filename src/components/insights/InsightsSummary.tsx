@@ -66,9 +66,11 @@ export function InsightsSummary({ data }: InsightsSummaryProps) {
           color="blue"
         />
         <MetricCard
-          label="Total Actual Spend"
+          label="Net Spend"
           value={formatCurrency(data.totalActual)}
-          sub={`${formatCurrency(data.totalActual / data.totalMonths)}/month`}
+          sub={data.totalActual < 0
+            ? `${formatCurrency(data.totalActual / data.totalMonths)}/month (net income)`
+            : `${formatCurrency(data.totalActual / data.totalMonths)}/month`}
           color={isOver ? 'red' : 'green'}
         />
         <MetricCard

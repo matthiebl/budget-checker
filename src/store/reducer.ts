@@ -46,6 +46,7 @@ export type Action =
   | { type: 'BULK_ASSIGN_CATEGORY'; payload: { rowIds: string[]; subcategoryId: string | null } }
   | { type: 'TOGGLE_ROW_SELECT'; payload: { rowId: string } }
   | { type: 'SELECT_ALL_ROWS' }
+  | { type: 'SELECT_ROWS'; payload: { rowIds: string[] } }
   | { type: 'CLEAR_SELECTION' }
   // Global
   | { type: 'LOAD_STATE'; payload: { state: PersistedState } }
@@ -352,6 +353,10 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         selectedRowIds: new Set(state.expenseRows.filter(r => !r.omit).map(r => r.id)),
       }
+    }
+
+    case 'SELECT_ROWS': {
+      return { ...state, selectedRowIds: new Set(action.payload.rowIds) }
     }
 
     case 'CLEAR_SELECTION': {

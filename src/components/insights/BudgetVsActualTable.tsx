@@ -43,7 +43,7 @@ export function BudgetVsActualTable({ data }: BudgetVsActualTableProps) {
               <th className="px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Subcategory</th>
               <th className="px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Budget/Month</th>
               <th className="px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Budget (Period)</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Actual Spend</th>
+              <th className="px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Net Spend</th>
               <th className="px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Variance</th>
               <th className="px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider text-center w-16">Status</th>
             </tr>
